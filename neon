@@ -1,0 +1,260 @@
+#!/usr/bin/env bash
+
+# --- Default Color Mappings ---
+COLOR_CYAN='\033[0;36m'
+COLOR_MAGENTA='\033[0;35m'
+COLOR_GREEN='\033[0;32m'
+COLOR_RED='\033[0;31m'
+COLOR_YELLOW='\033[0;33m'
+COLOR_BLUE='\033[0;34m'
+NC='\033[0m' 
+
+# --- Detect True User Home (Fixes Sudo Bug) ---
+if [ -n "$SUDO_USER" ]; then
+    REAL_HOME=$(getent passwd "$SUDO_USER" | cut -d: -f6)
+else
+    REAL_HOME="$HOME"
+fi
+
+CONFIG_DIR="$REAL_HOME/.config/neon"
+CONFIG_FILE="$CONFIG_DIR/neon.conf"
+
+# --- Handle Configuration File Auto-Creation ---
+if [ ! -f "$CONFIG_FILE" ]; then
+    mkdir -p "$CONFIG_DIR"
+    cat << 'EOF' > "$CONFIG_FILE"
+# --- Neon Package Manager Configuration ---
+
+# Style theme colors
+# Options: CYAN, MAGENTA, GREEN, RED, YELLOW, BLUE
+THEME_COLOR="CYAN"
+ACCENT_COLOR="MAGENTA"
+EOF
+    if [ -n "$SUDO_USER" ]; then
+        chown -R "$SUDO_USER:" "$CONFIG_DIR"
+    fi
+fi
+
+# Load the configuration file safely
+source "$CONFIG_FILE"
+
+# Assign parsed colors
+case "$THEME_COLOR" in
+    MAGENTA) CYAN=$COLOR_MAGENTA ;; GREEN) CYAN=$COLOR_GREEN ;;
+    RED) CYAN=$COLOR_RED ;; YELLOW) CYAN=$COLOR_YELLOW ;;
+    BLUE) CYAN=$COLOR_BLUE ;; *) CYAN=$COLOR_CYAN ;;
+esac
+
+case "$ACCENT_COLOR" in
+    CYAN) MAGENTA=$COLOR_CYAN ;; GREEN) MAGENTA=$COLOR_GREEN ;;
+    RED) MAGENTA=$COLOR_RED ;; YELLOW) MAGENTA=$COLOR_YELLOW ;;
+    BLUE) MAGENTA=$COLOR_BLUE ;; *) MAGENTA=$COLOR_MAGENTA ;;
+esac
+
+GREEN=$COLOR_GREEN
+RED=$COLOR_RED
+YELLOW=$COLOR_YELLOW
+
+LOGO="${MAGENTA}▲ neon${NC}"
+
+print_usage() {
+    echo -e "${LOGO} - The Ultimate Intelligent Wrapper for XBPS"
+    echo -e "\n${CYAN}Usage:${NC} neon [command] [package/options]"
+    echo -e "\n${CYAN}Commands:${NC}"
+    echo -e "  in, install    Installs a package (shows transaction layout)"
+    echo -e "  rm, remove     Removes a package"
+    echo -e "  up, update     Updates the system"
+    echo -e "  se, search     Searches for a package"
+    echo -e "  cl, clean      Removes orphaned packages and clears cache"
+}
+
+if ! command -v xbps-install &> /dev/null; then
+    echo -e "${RED}Error:${NC} XBPS not found. Are you sure you're on Void Linux?"
+    exit 1
+fi
+
+check_root() {
+    if [ "$EUID" -ne 0 ]; then
+        echo -e "${RED}Error:${NC} Please run with sudo or as root."
+        exit 1
+    fi
+}
+
+# --- Prompt Screen (Y/n) ---
+ask_confirmation() {
+    local action_text=$1
+    echo -ne "${CYAN}neon${NC} ── Do you want to ${MAGENTA}${action_text}${NC}? [Y/n] "
+    read -r choice
+    choice=$(echo "$choice" | tr '[:upper:]' '[:lower:]')
+    if [[ -z "$choice" || "$choice" == "y" || "$choice" == "yes" ]]; then
+        return 0 
+    else
+        echo -e "${YELLOW}[!] Operation aborted by user.${NC}"
+        return 1 
+    fi
+}
+
+# --- Classic Animated Progress Bar Loop ---
+show_progress() {
+    local pid=$1
+    local delay=0.1
+    local bar_width=20
+    local step=0
+
+    echo -ne "\033[?25l" # Hide cursor
+
+    while kill -0 "$pid" 2>/dev/null; do
+        local bar=""
+        for ((i=0; i<bar_width; i++)); do
+            if [ $i -lt $step ]; then bar="${bar}█"; else bar="${bar} "; fi
+        done
+        printf "\r${CYAN}neon${NC} ── [${MAGENTA}%s${NC}] " "${bar}"
+        
+        ((step++))
+        if [ $step -gt $bar_width ]; then step=0; fi
+        sleep $delay
+    done
+
+    # Finish state rendering
+    local full_bar=""
+    for ((i=0; i<bar_width; i++)); do full_bar="${full_bar}█"; done
+    printf "\r${CYAN}neon${NC} ── [${GREEN}%s${NC}] [✓] \n" "${full_bar}"
+    
+    echo -ne "\033[?25h" # Restore cursor
+}
+
+# --- Smart Typo Suggestion Algorithm ---
+suggest_command() {
+    local wrong_cmd=$1
+    local valid_cmds=("install" "remove" "update" "search" "clean")
+    local closest=""
+    local min_dist=99
+    for cmd in "${valid_cmds[@]}"; do
+        local s1=$wrong_cmd; local s2=$cmd; local l1=${#s1}; local l2=${#s2}
+        local len_diff=$(( l1 - l2 ))
+        [[ ${len_diff#-} -gt 3 ]] && continue
+        local d=()
+        for ((i=0; i<=l1; i++)); do d[i* (l2+1)]=i; done
+        for ((j=0; j<=l2; j++)); do d[j]=j; done
+        for ((i=1; i<=l1; i++)); do
+            for ((j=1; j<=l2; j++)); do
+                local cost=1
+                [[ "${s1:i-1:1}" == "${s2:j-1:1}" ]] && cost=0
+                local del=$(( d[(i-1)*(l2+1)+j] + 1 ))
+                local ins=$(( d[i*(l2+1)+j-1] + 1 ))
+                local sub=$(( d[(i-1)*(l2+1)+j-1] + cost ))
+                local min=$del
+                [[ $ins -lt $min ]] && min=$ins
+                [[ $sub -lt $min ]] && min=$sub
+                d[i*(l2+1)+j]=$min
+            done
+        done
+        local dist=${d[l1*(l2+1)+l2]}
+        if [[ $dist -lt $min_dist ]]; then min_dist=$dist; closest=$cmd; fi
+    done
+    if [[ $min_dist -le 2 ]]; then echo -e "${YELLOW}Did you mean: ${CYAN}neon $closest${NC}?"; fi
+}
+
+if [ -z "$1" ]; then
+    print_usage
+    exit 0
+fi
+
+COMMAND=$1
+shift
+
+case "$COMMAND" in
+    in|install)
+        if [ -z "$1" ]; then echo -e "${YELLOW}Please specify a package to install.${NC}"; exit 1; fi
+        check_root
+        echo -e "${CYAN}neon${NC} ── Calculating transaction layout..."
+        XBPS_DRY=$(xbps-install -Sny "$@" 2>/dev/null)
+        if [ -n "$XBPS_DRY" ]; then
+            echo -e "\n${CYAN}[TRANSACTION LAYOUT]${NC}"
+            echo -e "------------------------------------------------------------"
+            echo "$XBPS_DRY" | sed -e "s/\(.*install.*\)/${GREEN}\1${NC}/g" -e "s/\(.*update.*\)/${CYAN}\1${NC}/g" -e "s/\(.*download size.*\)/${MAGENTA}\1${NC}/g" -e "s/\(.*installed size.*\)/${MAGENTA}\1${NC}/g" -e "s/\(.*space freed.*\)/${GREEN}\1${NC}/g" -e "s/^/  /"
+            echo -e "------------------------------------------------------------\n"
+        else
+            echo -e "${RED}Error:${NC} Package not found or system is already up to date.\n"; exit 1
+        fi
+        if ! ask_confirmation "execute this transaction"; then exit 0; fi
+        echo -e "${CYAN}neon${NC} ── ${MAGENTA}Starting transaction...${NC}"
+        ERR_LOG=$(mktemp)
+        xbps-install -y "$@" > /dev/null 2> "$ERR_LOG" &
+        show_progress "$!"
+        wait "$!"
+        if [ $? -eq 0 ]; then echo -e "${GREEN}[✓] Success:${NC} Installation complete."; else echo -e "${RED}[✗] Failed:${NC} Error details:"; cat "$ERR_LOG"; fi
+        rm -f "$ERR_LOG"
+        ;;
+
+    rm|remove)
+        if [ -z "$1" ]; then echo -e "${YELLOW}Please specify a package to remove.${NC}"; exit 1; fi
+        check_root
+        echo -e "${CYAN}neon${NC} ── Calculating removal transaction..."
+        XBPS_DRY=$(xbps-remove -ny "$@" 2>/dev/null)
+        if [ -n "$XBPS_DRY" ]; then
+            echo -e "\n${RED}[REMOVAL LAYOUT]${NC}"
+            echo -e "------------------------------------------------------------"
+            echo "$XBPS_DRY" | sed -e "s/\(.*remove.*\)/${RED}\1${NC}/g" -e "s/\(.*space freed.*\)/${GREEN}\1${NC}/g" -e "s/^/  /"
+            echo -e "------------------------------------------------------------\n"
+        else
+            echo -e "${RED}Error:${NC} Package not found or cannot be removed.\n"; exit 1
+        fi
+        if ! ask_confirmation "remove $@"; then exit 0; fi
+        echo -e "${CYAN}neon${NC} ── ${MAGENTA}Starting removal...${NC}"
+        xbps-remove -y "$@" > /dev/null &
+        show_progress "$!"
+        wait "$!"
+        if [ $? -eq 0 ]; then echo -e "${GREEN}[✓] Success:${NC} Packages removed."; else echo -e "${RED}[✗] Failed:${NC} Could not remove packages."; fi
+        ;;
+
+    up|update)
+        check_root
+        echo -e "${CYAN}neon${NC} ── Checking for available updates..."
+        XBPS_DRY=$(xbps-install -Suny 2>/dev/null)
+        if [ -n "$XBPS_DRY" ]; then
+            echo -e "\n${CYAN}[AVAILABLE SYSTEM UPDATES]${NC}"
+            echo -e "------------------------------------------------------------"
+            echo "$XBPS_DRY" | sed -e "s/\(.*update.*\)/${CYAN}\1${NC}/g" -e "s/\(.*install.*\)/${GREEN}\1${NC}/g" -e "s/\(.*download size.*\)/${MAGENTA}\1${NC}/g" -e "s/\(.*installed size.*\)/${MAGENTA}\1${NC}/g" -e "s/^/  /"
+            echo -e "------------------------------------------------------------\n"
+        else
+            echo -e "${GREEN}[✓] Success:${NC} Your system is completely up to date!"; exit 0
+        fi
+        if ! ask_confirmation "perform this system update"; then exit 0; fi
+        echo -e "${CYAN}neon${NC} ── ${MAGENTA}Syncing repositories and updating system...${NC}"
+        xbps-install -Su -y > /dev/null &
+        show_progress "$!"
+        wait "$!"
+        if [ $? -eq 0 ]; then echo -e "${GREEN}[✓] Success:${NC} System updated successfully."; else echo -e "${RED}[✗] Failed:${NC} Update failed."; fi
+        ;;
+
+    se|search)
+        if [ -z "$1" ]; then echo -e "${YELLOW}Please specify a search term.${NC}"; exit 1; fi
+        echo -e "${CYAN}neon${NC} ── ${MAGENTA}Searching for:${NC} $1"
+        echo -e "----------------------------------------"
+        xbps-query -Rs "$1" | sed "s/^/\  /g"
+        ;;
+
+    cl|clean)
+        check_root
+        if ! ask_confirmation "clean system cache and remove orphan dependencies"; then exit 0; fi
+        echo -e "${CYAN}neon${NC} ── ${MAGENTA}Cleaning up cached repository files...${NC}"
+        xbps-remove -O -y > /dev/null &
+        show_progress "$!"
+        wait "$!"
+        echo -e "${CYAN}neon${NC} ── ${MAGENTA}Purging obsolete package caches...${NC}"
+        xbps-remove -c -y > /dev/null &
+        show_progress "$!"
+        wait "$!"
+        echo -e "${GREEN}[✓] Success:${NC} Your system is totally clean!"
+        ;;
+
+    *)
+        if [[ "$COMMAND" != "-h" && "$COMMAND" != "--help" ]]; then
+            echo -e "${RED}Error:${NC} '${COMMAND}' is not a valid neon command."
+            suggest_command "$COMMAND"
+            echo ""
+        fi
+        print_usage
+        ;;
+esac
