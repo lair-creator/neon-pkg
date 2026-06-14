@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # neon
 
 A sleek, intelligent, and minimalist frontend wrapper for the XBPS package manager on Void Linux. It provides a customized command-line interface with silent background operations, progress animations, safety confirmation prompts, and built-in Levenshtein typo protection.
