@@ -26,7 +26,4 @@ git clone https://github.com/lair-creator/neon-pkg.git
 cd neon-pkg
 
 sudo ./install.sh
-=======
-# neon-pkg
-Wrapper for Xbps package manager
->>>>>>> ae4b6e0ed91b9568dbf3846e4bc495bc31233873
+
