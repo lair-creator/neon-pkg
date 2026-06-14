@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # neon
 
 A sleek, intelligent, and minimalist frontend wrapper for the XBPS package manager on Void Linux. It provides a customized command-line interface with silent background operations, progress animations, safety confirmation prompts, and built-in Levenshtein typo protection.
@@ -21,7 +22,11 @@ A sleek, intelligent, and minimalist frontend wrapper for the XBPS package manag
 
 ### 1. Clone the Repository
 ```bash
-git clone [https://github.com/YOUR_USERNAME/neon.git](https://github.com/YOUR_USERNAME/neon.git)
-cd neon
+git clone https://github.com/lair-creator/neon-pkg.git
+cd neon-pkg
 
 sudo ./install.sh
+=======
+# neon-pkg
+Wrapper for Xbps package manager
+>>>>>>> ae4b6e0ed91b9568dbf3846e4bc495bc31233873
